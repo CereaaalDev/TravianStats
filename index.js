@@ -17,10 +17,6 @@ var app = express();
 //statische Webseiten ermöglichen
 app.use(express.static(__dirname + "/public"));
 
-//Parameter
-
-
-
 async function getStats() {
   try {
     const response = await axios.post(process.env.LOGINURL, {
