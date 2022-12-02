@@ -171,7 +171,7 @@ app.get("/i-wott-die-infos", async (req, res) => {
 
 //Startseite anzeigen
 app.get("/", function (req, res) {
-  res.sendFile(path.join(__dirname + "/index.html"));
+  res.sendFile(path.join(__dirname + "/public/index.html"));
 });
 
 //Server starten
