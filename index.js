@@ -110,7 +110,7 @@ async function getStats() {
     let playersInfo = [];
 
      //Gewünschte Daten in JSON-Objekt speichern
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= lastPage; i++) {
       const statReq = await client.get(
         `https://ts4.x1.international.travian.com/statistics/player/overview?page=${i}`,
         {
