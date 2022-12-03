@@ -14,11 +14,15 @@ const client = wrapper(axios.create({ jar }));
 
 var app = express();
 
+var finalCSV = '';
+
 //statische Webseiten ermöglichen
 app.use(express.static(__dirname + "/public"));
 
 async function getStats() {
   try {
+    console.log('Abfragen gestartet');
+    finalCSV = '';
     const response = await axios.post(process.env.LOGINURL, {
       gameworld: {
         uuid: "e2300000-6b47-11ed-6404-000000000000",
@@ -139,7 +143,10 @@ async function getStats() {
 
     //Daten in CSV Umwandeln
 
-    return (json2csv(playersInfo, { header: true }));
+    
+
+    finalCSV = json2csv(playersInfo, { header: true });
+    console.log('Abfragen beendet');
   } catch (error) {
     console.error(error);
   }
@@ -147,7 +154,8 @@ async function getStats() {
 
 //Endpunkt um File herunterzuladen
 app.get("/i-wott-die-infos", async (req, res) => {
-  let responseCSV = await getStats();
+  //let responseCSV = await getStats();
+  let responseCSV = finalCSV;
 
   //Zeitstempel generieren
   const time = Date.now();
@@ -168,6 +176,14 @@ app.get("/i-wott-die-infos", async (req, res) => {
   );
   res.send(responseCSV.toString()).end();
 });
+
+app.get("/trigger", function (req, res) {
+  getStats();
+  //res.send('HTTP200');
+  res.redirect('/');
+  //res.sendStatus(200);
+});
+
 
 //Startseite anzeigen
 app.get("/", function (req, res) {
