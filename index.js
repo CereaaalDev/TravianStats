@@ -6,7 +6,7 @@ const { CookieJar } = require("tough-cookie");
 const { wrapper } = require("axios-cookiejar-support");
 const path = require("path");
 const json2csv = require("json2csv").parse;
-const dotenv = require('dotenv').config();
+const dotenv = require("dotenv").config();
 
 //Cookie-Wrapper initalisieren
 const jar = new CookieJar();
@@ -14,88 +14,71 @@ const client = wrapper(axios.create({ jar }));
 
 var app = express();
 
-var finalCSV = '';
+var finalCSV = "";
 
 //statische Webseiten ermöglichen
 app.use(express.static(__dirname + "/public"));
 
+app.get("/new", function (req, res) {
+  newStats();
+  //res.send('HTTP200');
+  res.redirect("/");
+  //res.sendStatus(200);
+});
+
+async function newStats() {
+  console.log(process.env.TRAVIAN_BASEURL);
+  const body = {
+    name: process.env.TRAVIAN_USER,
+    password: process.env.TRAVIAN_PWD,
+    w: "2560:1440",
+    mobileOptimizations: false,
+  };
+  console.log(body);
+
+  const response = await axios.post(
+    process.env.TRAVIAN_BASEURL + "/auth/login",
+    body
+  );
+  console.log(response.data);
+  const authCode = response.data.code;
+  const response2 = await axios.get(
+    `${process.env.TRAVIAN_BASEURL}/auth?code=${authCode}`
+  );
+  console.log(response2.data);
+
+  const get3 = await client.get(
+    "https://ts4.x1.international.travian.com/statistics/player/overview?page=1",
+    {
+      headers: {
+        "Accept-Encoding": null,
+      },
+    }
+  );
+
+  console.log(get3.data);
+}
+
 async function getStats() {
   try {
-    console.log('Abfragen gestartet');
-    finalCSV = '';
-    const response = await axios.post(process.env.LOGINURL, {
-      gameworld: {
-        uuid: "e2300000-6b47-11ed-6404-000000000000",
-        domain: "international",
-        region: "international",
-        name: " International 4",
-        url: "https://ts4.x1.international.travian.com/",
-        registrationClosed: false,
-        registrationKeyRequired: false,
-        hidden: false,
-        start: 1669219200,
-        end: null,
-        mainpageBackground: "",
-        subtitle: "",
-        speed: "1",
-        mainpageGroups: [
-          "international",
-          "com",
-          "us",
-          "nz",
-          "uk",
-          "au",
-          "mx",
-          "ar",
-          "cl",
-          "br",
-          "ae",
-          "eg",
-          "sa",
-          "arabia",
-          "id",
-          "my",
-          "vn",
-          "hk",
-          "tw",
-          "jp",
-          "ba",
-          "bg",
-          "hr",
-          "rs",
-          "si",
-          "ee",
-          "il",
-          "gr",
-          "hu",
-          "it",
-          "lt",
-          "lv",
-          "pl",
-          "ro",
-          "cz",
-          "sk",
-          "fr",
-          "de",
-          "es",
-          "pt",
-          "dk",
-          "fi",
-          "nl",
-          "no",
-          "se",
-          "ru",
-          "tr",
-        ],
-      },
-      usernameOrEmail: process.env.TRAVIAN_USER,
-      password: process.env.TRAVIAN_PWD,
-      w: "2560:1440",
-    });
+    console.log("Abfragen gestartet");
 
-    ///2.Request Token und Cookie abholen
-    //Weiterleitungs-URL aus Response
-    await client.post(response.data.location);
+    //1. Login mit Username Passwort
+    const loginResponse = await client.post(
+      process.env.TRAVIAN_BASEURL + "/auth/login",
+      {
+        name: process.env.TRAVIAN_USER,
+        password: process.env.TRAVIAN_PWD,
+        w: "2560:1440",
+        mobileOptimizations: false,
+      }
+    );
+    const authCode = loginResponse.data.code;
+
+    //2. JWT-Token abholen
+    const authResponse = await client.get(
+      `${process.env.TRAVIAN_BASEURL}/auth?code=${authCode}`
+    );
 
     // 3. Request Statisik abfragen (Datenformatierung ausschaten für parsing)
     const get3 = await client.get(
@@ -111,9 +94,10 @@ async function getStats() {
     let $ = cheerio.load(get3.data);
     let linkLastPage = $('[class="last"]').attr("href");
     const lastPage = linkLastPage.substring(linkLastPage.indexOf("=") + 1);
+    console.log(lastPage);
     let playersInfo = [];
 
-     //Gewünschte Daten in JSON-Objekt speichern
+    //Gewünschte Daten in JSON-Objekt speichern
     for (let i = 1; i <= lastPage; i++) {
       const statReq = await client.get(
         `https://ts4.x1.international.travian.com/statistics/player/overview?page=${i}`,
@@ -142,11 +126,8 @@ async function getStats() {
     }
 
     //Daten in CSV Umwandeln
-
-    
-
     finalCSV = json2csv(playersInfo, { header: true });
-    console.log('Abfragen beendet');
+    console.log("Abfragen beendet");
   } catch (error) {
     console.error(error);
   }
@@ -154,7 +135,7 @@ async function getStats() {
 
 //Endpunkt um File herunterzuladen
 app.get("/i-wott-die-infos", async (req, res) => {
-  //let responseCSV = await getStats();
+  await getStats();
   let responseCSV = finalCSV;
 
   //Zeitstempel generieren
@@ -177,14 +158,6 @@ app.get("/i-wott-die-infos", async (req, res) => {
   res.send(responseCSV.toString()).end();
 });
 
-app.get("/trigger", function (req, res) {
-  getStats();
-  //res.send('HTTP200');
-  res.redirect('/');
-  //res.sendStatus(200);
-});
-
-
 //Startseite anzeigen
 app.get("/", function (req, res) {
   res.sendFile(path.join(__dirname + "/public/index.html"));
@@ -193,5 +166,5 @@ app.get("/", function (req, res) {
 //Server starten
 const port = process.env.PORT || 3003;
 app.listen(port, () => {
-  console.log(`index.js listening at http://localhost:${port}`);
+  console.log(`index.js listening at Port ${port}`);
 });
