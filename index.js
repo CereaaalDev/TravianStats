@@ -1,170 +1,133 @@
 const express = require("express");
 const axios = require("axios").default;
 const cheerio = require("cheerio");
-//Wrapper für Cookiehandling mit Axios
 const { CookieJar } = require("tough-cookie");
 const { wrapper } = require("axios-cookiejar-support");
 const path = require("path");
+const fs = require("fs");
 const json2csv = require("json2csv").parse;
-const dotenv = require("dotenv").config();
+require("dotenv").config();
 
-//Cookie-Wrapper initalisieren
 const jar = new CookieJar();
 const client = wrapper(axios.create({ jar }));
+const app = express();
+const CSV_FILE_PATH = path.join(__dirname, "latest_travian_stats.csv");
 
-var app = express();
+app.use(express.static(path.join(__dirname, "public")));
 
-var finalCSV = "";
+let authCode = null;
 
-//statische Webseiten ermöglichen
-app.use(express.static(__dirname + "/public"));
+// Function to authenticate and get a new authCode
+async function authenticate() {
+  try {
+    console.log("Authenticating...");
+    const response = await client.post(`${process.env.TRAVIAN_BASEURL}/api/v1/auth/login`, {
+      name: process.env.TRAVIAN_USER,
+      password: process.env.TRAVIAN_PWD,
+      w: "2560:1440",
+      mobileOptimizations: false,
+    });
+    authCode = response.data.code;
+    await client.get(`${process.env.TRAVIAN_BASEURL}/api/v1/auth?code=${authCode}`);
+    console.log("Authentication successful");
+  } catch (error) {
+    console.error("Authentication failed:", error.message);
+    authCode = null;
+    throw new Error("Authentication failed");
+  }
+}
 
-app.get("/new", function (req, res) {
-  newStats();
-  //res.send('HTTP200');
-  res.redirect("/");
-  //res.sendStatus(200);
-});
-
-async function newStats() {
-  console.log(process.env.TRAVIAN_BASEURL);
-  const body = {
-    name: process.env.TRAVIAN_USER,
-    password: process.env.TRAVIAN_PWD,
-    w: "2560:1440",
-    mobileOptimizations: false,
-  };
-  console.log(body);
-
-  const response = await axios.post(
-    process.env.TRAVIAN_BASEURL + "/auth/login",
-    body
-  );
-  console.log(response.data);
-  const authCode = response.data.code;
-  const response2 = await axios.get(
-    `${process.env.TRAVIAN_BASEURL}/auth?code=${authCode}`
-  );
-  console.log(response2.data);
-
-  const get3 = await client.get(
-    "https://ts4.x1.international.travian.com/statistics/player/overview?page=1",
-    {
-      headers: {
-        "Accept-Encoding": null,
-      },
+// Wrapper function to ensure authentication before making requests
+async function ensureAuthenticatedRequest(apiCall) {
+  try {
+    if (!authCode) {
+      await authenticate();
     }
-  );
-
-  console.log(get3.data);
+    return await apiCall();
+  } catch (error) {
+    // If authentication fails or the authCode is invalid, re-authenticate and retry once
+    if (error.response && error.response.status === 401) {
+      console.warn("Auth token expired, re-authenticating...");
+      authCode = null;
+      await authenticate();
+      return await apiCall(); // Retry after re-authentication
+    } else {
+      throw error; // If it's not an auth issue, propagate the error
+    }
+  }
 }
 
 async function getStats() {
   try {
-    console.log("Abfragen gestartet");
+    console.log("Fetching player stats...");
 
-    //1. Login mit Username Passwort
-    const loginResponse = await client.post(
-      process.env.TRAVIAN_BASEURL + "/auth/login",
-      {
-        name: process.env.TRAVIAN_USER,
-        password: process.env.TRAVIAN_PWD,
-        w: "2560:1440",
-        mobileOptimizations: false,
-      }
-    );
-    const authCode = loginResponse.data.code;
-
-    //2. JWT-Token abholen
-    const authResponse = await client.get(
-      `${process.env.TRAVIAN_BASEURL}/auth?code=${authCode}`
+    // Ensure authentication before making requests
+    const initialPage = await ensureAuthenticatedRequest(() =>
+      client.get(`${process.env.TRAVIAN_BASEURL}/statistics/player/overview?page=1`, {
+        headers: { "Accept-Encoding": "gzip, deflate" },
+      })
     );
 
-    // 3. Request Statisik abfragen (Datenformatierung ausschaten für parsing)
-    const get3 = await client.get(
-      "https://ts4.x1.international.travian.com/statistics/player/overview?page=1",
-      {
-        headers: {
-          "Accept-Encoding": null,
-        },
-      }
-    );
+    const $ = cheerio.load(initialPage.data);
+    const lastPage = parseInt($('[class="last"]').attr("href")?.split("=").pop(), 10) || 1;
 
-    //Nummer der letzten Seite abfragen
-    let $ = cheerio.load(get3.data);
-    let linkLastPage = $('[class="last"]').attr("href");
-    const lastPage = linkLastPage.substring(linkLastPage.indexOf("=") + 1);
-    console.log(lastPage);
     let playersInfo = [];
+    let requests = [];
 
-    //Gewünschte Daten in JSON-Objekt speichern
     for (let i = 1; i <= lastPage; i++) {
-      const statReq = await client.get(
-        `https://ts4.x1.international.travian.com/statistics/player/overview?page=${i}`,
-        {
-          headers: {
-            "Accept-Encoding": null,
-          },
-        }
+      requests.push(
+        ensureAuthenticatedRequest(() =>
+          client.get(`${process.env.TRAVIAN_BASEURL}/statistics/player/overview?page=${i}`, {
+            headers: { "Accept-Encoding": "gzip, deflate" },
+          })
+        )
       );
-
-      $ = cheerio.load(statReq.data);
-      //Für jeden Eintrag die gewünschen Infos holen
-      $('[class="hover"]').each(function (index, element) {
-        let ranking = $(element).find('[class="ra "]').text();
-        let name = $(element).find('[class="pla "]').text();
-        let alianz = $(element).find('[class="al "]').text();
-        let population = $(element).find('[class="pop "]').text();
-
-        playersInfo.push({
-          ranking: ranking,
-          name: name,
-          allianz: alianz,
-          population: population,
-        });
-      });
     }
 
-    //Daten in CSV Umwandeln
-    finalCSV = json2csv(playersInfo, { header: true });
-    console.log("Abfragen beendet");
+    const responses = await Promise.allSettled(requests);
+
+    responses.forEach((result) => {
+      if (result.status === "fulfilled") {
+        const $$ = cheerio.load(result.value.data);
+        $$('.hover').each((_, element) => {
+          playersInfo.push({
+            ranking: $$(element).find('[class="ra "]').text().trim(),
+            name: $$(element).find('[class="pla "]').text().trim(),
+            allianz: $$(element).find('.al > a').text().trim(),
+            population: $$(element).find('[class="pop "]').text().replace(/[\u202A-\u202E]/g, '').trim(),
+            link: process.env.TRAVIAN_BASEURL + $$(element).find('.pla a').attr('href'),
+          });
+        });
+      } else {
+        console.error("Failed to fetch a page:", result.reason.message);
+      }
+    });
+
+    const finalCSV = json2csv(playersInfo, { header: true });
+    fs.writeFileSync(CSV_FILE_PATH, finalCSV);
+    console.log("Player stats fetched successfully and saved.");
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching stats:", error.message);
   }
 }
 
-//Endpunkt um File herunterzuladen
-app.get("/i-wott-die-infos", async (req, res) => {
+app.get("/new", async (req, res) => {
   await getStats();
-  let responseCSV = finalCSV;
+  res.redirect("/");
+});
 
-  //Zeitstempel generieren
-  const time = Date.now();
-  const date = new Date(time);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hour = String(date.getHours()).padStart(2, "0");
-  const minute = String(date.getMinutes()).padStart(2, "0");
-  const second = String(date.getSeconds()).padStart(2, "0");
-
-  const timeStamp = year + month + day + "-" + hour + minute + second;
-
+app.get("/i-wott-die-infos", async (req, res) => {
+  await getStats(); // Always fetch new data before responding
   res.setHeader("Content-Type", "text/csv");
-  res.setHeader(
-    "Content-Disposition",
-    "attachment; filename=travian-stats_" + timeStamp + ".csv"
-  );
-  res.send(responseCSV.toString()).end();
+  res.setHeader("Content-Disposition", `attachment; filename=travian-stats_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`);
+  res.sendFile(CSV_FILE_PATH);
 });
 
-//Startseite anzeigen
-app.get("/", function (req, res) {
-  res.sendFile(path.join(__dirname + "/public/index.html"));
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public/index.html"));
 });
 
-//Server starten
 const port = process.env.PORT || 3003;
 app.listen(port, () => {
-  console.log(`index.js listening at Port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
